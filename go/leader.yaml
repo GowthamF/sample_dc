@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: leader-elector
+  labels:
+    app: guestbook
+    tier: leader-elector
+spec:
+  # modify replicas according to your case
+  replicas: 3
+  selector:
+    matchLabels:
+      tier: leader-elector
+  template:
+    metadata:
+      labels:
+        tier: leader-elector
+    spec:
+      containers:
+      - name: leader-elector
+        image: gcr.io/google_containers/leader-elector:0.4
+        args: 
+          - --election
+          - example

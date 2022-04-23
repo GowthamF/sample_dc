@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample
+  labels:
+    app: sample
+    tier: sample
+spec:
+  # modify replicas according to your case
+  replicas: 3
+  selector:
+    matchLabels:
+      tier: sample
+      run: docker-gs-ping
+  template:
+    metadata:
+      labels:
+        tier: sample
+        run: docker-gs-ping
+    spec:
+      containers:
+      - name: sample
+        image: docker-gs-ping
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: MY_POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: MY_POD_ID
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.uid
+        ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-service
+  labels:
+    app: sample
+spec:
+  type: NodePort
+  selector:
+    run: docker-gs-ping
+  ports:
+    - nodePort: 30163
+      port: 8080 
+      targetPort: 8080
