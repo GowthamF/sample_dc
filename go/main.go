@@ -3,84 +3,200 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
-	"net/http"
-	"os"
+	"net"
 	"time"
 
-	"cloud.google.com/go/firestore"
-	firebase "firebase.google.com/go"
-	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
-	"google.golang.org/api/option"
+	pb "dc.com/m/v2/protos"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
-var FireStoreClient *firestore.Client
-var ClientError error
+func buildConfig(kubeconfig string) (*rest.Config, error) {
+	if kubeconfig != "" {
+		cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+		if err != nil {
+			return nil, err
+		}
+		return cfg, nil
+	}
+
+	cfg, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+type server struct {
+	pb.UnimplementedGreeterServer
+}
+
+func (s *server) SayHelloAgain(ctx context.Context, in *pb.HelloRequest) (*pb.HelloReply, error) {
+	var message string = "Hello" + in.GetName()
+	return &pb.HelloReply{Message: &message}, nil
+}
 
 var (
-	flags = flag.NewFlagSet(
-		`sample --userid=<name>`,
-		flag.ExitOnError)
-	name = flags.String("userid", "", "The name of the election")
+	port     = flag.Int("port", 50051, "The server port")
+	addr     = flag.String("addr", "localhost:50051", "the address to connect to")
+	name     = flag.String("name", "world", "Name to greet")
+	isServer = flag.Bool("server", false, "True or False")
 )
 
-func validateFlags() {
+func getServerMessage() {
+	// Set up a connection to the server.
+	conn, err := grpc.Dial(*addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		log.Fatalf("did not connect: %v", err)
+	}
+	defer conn.Close()
+	c := pb.NewGreeterClient(conn)
 
-	if len(*name) == 0 {
-		log.Fatalf("--election cannot be empty")
+	// Contact the server and print out its response.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	r1, err1 := c.SayHelloAgain(ctx, &pb.HelloRequest{Name: name})
+
+	if err1 != nil {
+		log.Fatalf("could not greet: %v", err1)
+	}
+	log.Printf("Greeting: %s", r1.GetMessage())
+}
+
+func createServer() {
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", *port))
+	if err != nil {
+		log.Fatalf("failed to listen: %v", err)
+	}
+	s := grpc.NewServer()
+	pb.RegisterGreeterServer(s, &server{})
+	log.Printf("server listening at %v", lis.Addr())
+	if err := s.Serve(lis); err != nil {
+		log.Fatalf("failed to serve: %v", err)
 	}
 }
 
 func main() {
-	name := os.Getenv("MY_POD_NAME")
-	id := os.Getenv("MY_POD_ID")
+	flag.Parse()
+	// if !*isServer {
+	createServer()
+	// }
+	// if *isServer {
+	getServerMessage()
+	// }
 
-	InitApp()
-	e := echo.New()
+	// klog.InitFlags(nil)
+	// lis, err := net.Listen("tcp", fmt.Sprintf(":%d", *port))
+	// var kubeconfig string
+	// var leaseLockName string
+	// var leaseLockNamespace string
+	// var id string
 
-	e.Use(middleware.Logger())
-	e.Use(middleware.Recover())
-	FireStoreClient.Collection("NodeRegistry").Add(context.Background(), map[string]interface{}{
-		"nodeId":   time.Now().Unix(),
-		"isMaster": false,
-		"name":     name,
-		"id":       id,
-	})
-	e.GET("/", func(c echo.Context) error {
-		return c.HTML(http.StatusOK, "Hello, Docker! <3")
-	})
+	// flag.StringVar(&kubeconfig, "kubeconfig", "", "absolute path to the kubeconfig file")
+	// flag.StringVar(&id, "id", uuid.New().String(), "the holder identity name")
+	// flag.StringVar(&leaseLockName, "lease-lock-name", "", "the lease lock resource name")
+	// flag.StringVar(&leaseLockNamespace, "lease-lock-namespace", "", "the lease lock resource namespace")
+	// flag.Parse()
 
-	e.GET("/ping", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, struct{ Status string }{Status: "OK"})
-	})
+	// if leaseLockName == "" {
+	// 	klog.Fatal("unable to get lease lock resource name (missing lease-lock-name flag).")
+	// }
+	// if leaseLockNamespace == "" {
+	// 	klog.Fatal("unable to get lease lock resource namespace (missing lease-lock-namespace flag).")
+	// }
 
-	httpPort := os.Getenv("HTTP_PORT")
-	if httpPort == "" {
-		httpPort = "8080"
-	}
+	// // leader election uses the Kubernetes API by writing to a
+	// // lock object, which can be a LeaseLock object (preferred),
+	// // a ConfigMap, or an Endpoints (deprecated) object.
+	// // Conflicting writes are detected and each client handles those actions
+	// // independently.
 
-	e.Logger.Fatal(e.Start(":" + httpPort))
-}
+	// s := grpc.NewServer()
 
-func InitApp() {
-	var opt = option.WithCredentialsFile("service-registry-29e77-firebase-adminsdk-i58d8-bee6cc6294.json")
+	// pb.RegisterGreeterServer(s, &server{})
 
-	var config = &firebase.Config{ProjectID: "service-registry-29e77"}
+	// if err := s.Serve(lis); err != nil {
+	// 	log.Fatalf("failed to serve: %v", err)
+	// }
 
-	app, err := firebase.NewApp(context.Background(), config, opt)
-	if err != nil {
-		log.Fatalf("error initializing app: %v\n", err)
-	}
-	FireStoreClient, ClientError = app.Firestore(context.Background())
-	if err != nil {
-		log.Fatalln(err)
-	}
-	if err != nil {
-		log.Fatalln(err)
-	}
-	if ClientError != nil {
-		log.Fatalf("error creating client: %v\n", err)
-	}
+	// config, err := buildConfig(kubeconfig)
+	// if err != nil {
+	// 	klog.Fatal(err)
+	// }
+	// client := clientset.NewForConfigOrDie(config)
 
+	// run := func(ctx context.Context) {
+	// 	// complete your controller loop here
+	// 	klog.Info("Controller loop...")
+
+	// 	select {}
+	// }
+
+	// // use a Go context so we can tell the leaderelection code when we
+	// // want to step down
+	// ctx, cancel := context.WithCancel(context.Background())
+	// defer cancel()
+
+	// // listen for interrupts or the Linux SIGTERM signal and cancel
+	// // our context, which the leader election code will observe and
+	// // step down
+	// ch := make(chan os.Signal, 1)
+	// signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	// go func() {
+	// 	<-ch
+	// 	klog.Info("Received termination, signaling shutdown")
+	// 	cancel()
+	// }()
+
+	// // we use the Lease lock type since edits to Leases are less common
+	// // and fewer objects in the cluster watch "all Leases".
+	// lock := &resourcelock.LeaseLock{
+	// 	LeaseMeta: metav1.ObjectMeta{
+	// 		Name:      leaseLockName,
+	// 		Namespace: leaseLockNamespace,
+	// 	},
+	// 	Client: client.CoordinationV1(),
+	// 	LockConfig: resourcelock.ResourceLockConfig{
+	// 		Identity: id,
+	// 	},
+	// }
+
+	// // start the leader election code loop
+	// leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
+	// 	Lock: lock,
+	// 	// IMPORTANT: you MUST ensure that any code you have that
+	// 	// is protected by the lease must terminate **before**
+	// 	// you call cancel. Otherwise, you could have a background
+	// 	// loop still running and another process could
+	// 	// get elected before your background loop finished, violating
+	// 	// the stated goal of the lease.
+	// 	ReleaseOnCancel: true,
+	// 	LeaseDuration:   60 * time.Second,
+	// 	RenewDeadline:   15 * time.Second,
+	// 	RetryPeriod:     5 * time.Second,
+	// 	Callbacks: leaderelection.LeaderCallbacks{
+	// 		OnStartedLeading: func(ctx context.Context) {
+	// 			// we're notified when we start - this is where you would
+	// 			// usually put your code
+	// 			run(ctx)
+	// 		},
+	// 		OnStoppedLeading: func() {
+	// 			// we can do cleanup here
+	// 			klog.Infof("leader lost: %s", id)
+	// 			os.Exit(0)
+	// 		},
+	// 		OnNewLeader: func(identity string) {
+	// 			// we're notified when new leader elected
+	// 			if identity == id {
+	// 				// I just got the lock
+	// 				return
+	// 			}
+	// 			klog.Infof("new leader elected: %s", identity)
+	// 		},
+	// 	},
+	// })
 }
